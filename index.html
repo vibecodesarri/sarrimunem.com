@@ -617,7 +617,7 @@ footer .secret-hint b{color:var(--amber);font-weight:400}
     <div class="win-body">
       <canvas id="surf-cv" aria-label="surf minigame: ride the wireframe ridge, hold A or D to carve into the ramp"></canvas>
       <div id="surf-hint">
-        <span>carve <kbd>A</kbd><kbd>D</kbd> into the ramp · look <kbd>mouse</kbd> · reset <kbd>R</kbd> · escape <kbd>esc</kbd></span>
+        <span>carve <kbd>A</kbd><kbd>D</kbd> into the ramp · look <kbd>mouse</kbd> · <kbd>B</kbd> reset run · <kbd>N</kbd> last checkpoint</span>
         <span>speed is earned, not given. don't look down.</span>
       </div>
     </div>
@@ -1453,9 +1453,9 @@ function initSurf(){
   }
 
   /* world: an endless curving ridge. peak in the middle, void either side. */
-  const HALF = 14, SLOPE = 0.75, PEAK = 8, EYE = 1.7;
+  const HALF = 14, SLOPE = 0.75, PEAK = 8, EYE = 1.7, BOT = PEAK - HALF * SLOPE;
   const centerX = z => Math.sin(z * 0.012) * 26 + Math.sin(z * 0.0045) * 40;
-  const inGap = z => z > 220 && (z % 240) > 222;
+  const inGap = z => z > 260 && (z % 300) > 284;
   function surfH(x, z){
     if (inGap(z)) return null;
     const dx = Math.abs(x - centerX(z));
@@ -1463,19 +1463,33 @@ function initSurf(){
     return PEAK - dx * SLOPE;
   }
 
+  /* run: checkpoints + timer, surf-server style */
+  const CPS = [300, 700, 1200, 1800];
+  let splits = [0, 0, 0, 0], got = 0, runStart = 0, runEnd = 0, pb = 0, flash = 0;
+  try{ pb = Math.floor(+localStorage.getItem('sarri_surf_pb')) || 0; }catch(e){}
+
   /* player */
-  let px, py, pz, vx, vy, vz, yaw = 0, roll = 0, dead = 0, dist = 0;
+  let px, py, pz, vx, vy, vz, yaw = 0, pitch = -0.06, roll = 0, dead = 0, dist = 0;
   let best = 0;
   try{ best = Math.floor(+localStorage.getItem('sarri_surf_best')) || 0; }catch(e){}
   function updBest(){ if (bestEl) bestEl.textContent = 'BEST ' + best + 'm'; }
   updBest();
-  function reset(){
-    pz = 4; px = centerX(4) + 5;
+  function fmt(ms){
+    const m = Math.floor(ms / 60000), s = Math.floor(ms % 60000 / 1000), t = Math.floor(ms % 1000 / 100);
+    return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
+  }
+  function spawn(z){
+    pz = z; px = centerX(z) + 5;
     const h = surfH(px, pz);
     py = (h === null ? PEAK : h) + EYE;
-    vx = 0; vy = 0; vz = 16; yaw = 0; dead = 0; dist = 0;
+    vx = 0; vy = 0; vz = 18; yaw = 0; pitch = -0.06; dead = 0;
   }
-  reset();
+  function resetRun(){
+    splits = [0, 0, 0, 0]; got = 0; runStart = 0; runEnd = 0; dist = 0; flash = 0;
+    spawn(4);
+  }
+  function respawnCp(){ spawn(got > 0 ? CPS[got - 1] + 4 : 4); }
+  resetRun();
 
   /* input */
   const keys = {};
@@ -1493,14 +1507,16 @@ function initSurf(){
     wake();
   });
   window.addEventListener('mousemove', e => {
-    if (locked) yaw = clamp(yaw + e.movementX * 0.0022, -1.2, 1.2);
+    if (!locked) return;
+    yaw = clamp(yaw + e.movementX * 0.0022, -1.2, 1.2);
+    pitch = clamp(pitch - e.movementY * 0.0018, -0.55, 0.35);
   }, {passive: true});
   window.addEventListener('keydown', e => {
     if (!playing) return;
     const a = document.activeElement;
     if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
     const k = e.key.toLowerCase();
-    if (k === 'a' || k === 'd' || k === 'r' || k === 'arrowleft' || k === 'arrowright'){
+    if (k === 'a' || k === 'd' || k === 'r' || k === 'b' || k === 'n' || k === 'arrowleft' || k === 'arrowright'){
       keys[k] = true;
       e.preventDefault();
     }
@@ -1524,49 +1540,72 @@ function initSurf(){
 
   /* physics: gravity slides you down the face; carving into the ramp = speed */
   function phys(dt){
+    if (flash > 0) flash -= dt;
     if (dead > 0){
       dead -= dt;
-      if (dead <= 0) reset();
+      if (dead <= 0) respawnCp();
       return;
     }
     if (!playing) return;
-    if (keys.r){ keys.r = false; reset(); return; }
+    if (keys.b || keys.r){ keys.b = false; keys.r = false; resetRun(); return; }
+    if (keys.n){ keys.n = false; respawnCp(); return; }
     if (keys.arrowleft)  yaw = clamp(yaw - 1.8 * dt, -1.2, 1.2);
     if (keys.arrowright) yaw = clamp(yaw + 1.8 * dt, -1.2, 1.2);
     const strafe = (keys.a ? -1 : 0) + (keys.d ? 1 : 0) + touchDir;
+    if (!runStart && !runEnd && strafe !== 0) runStart = performance.now();
     const h = surfH(px, pz);
-    const on = h !== null && (py - EYE) <= h + 0.2 && vy <= 4;
+    const on = h !== null && (py - EYE) <= h + 0.35 && vy <= 4;
     if (on){
       py = h + EYE;
       if (vy < 0) vy = 0;
       const side = px < centerX(pz) ? -1 : 1;
-      vx += side * 26 * dt;                       /* the ramp wants you gone */
+      vx += side * 22 * dt;                       /* the ramp wants you gone */
       if (strafe === -side){                      /* carving in: earn speed */
-        vz += 26 * dt;
-        vx += strafe * 34 * dt;
+        vz += 30 * dt;
+        vx += strafe * 36 * dt;
       } else if (strafe !== 0){
         vx += strafe * 20 * dt;
       }
     } else {
       vy -= 24 * dt;
-      vx += strafe * 9 * dt;
+      vx += strafe * 10 * dt;
       if (strafe !== 0 && Math.abs(yaw) > 0.15 && (yaw > 0) === (strafe > 0)) vz += 8 * dt;
     }
-    vx = clamp(vx, -46, 46);
-    vz = clamp(vz, 10, 95);
+    vx = clamp(vx, -48, 48);
+    vz = clamp(vz, 10, 110);
     px += vx * dt; py += vy * dt; pz += vz * dt;
     const h2 = surfH(px, pz);
     if (h2 !== null && (py - EYE) < h2){ py = h2 + EYE; if (vy < 0) vy = 0; }
     if (pz > dist) dist = pz;
+    if (!locked && FINE === false){
+      yaw += (Math.atan2(vx, Math.max(vz, 1)) * 0.6 - yaw) * Math.min(dt * 3, 1);
+    }
+    /* checkpoints */
+    const elapsed = runStart ? performance.now() - runStart : 0;
+    while (got < 4 && pz >= CPS[got]){
+      splits[got] = elapsed;
+      got++;
+      if (got === 4){
+        runEnd = elapsed;
+        flash = 3;
+        fanfare([659, 784, 1047], 'square', 0.07);
+        if (!pb || runEnd < pb){
+          pb = Math.floor(runEnd);
+          try{ localStorage.setItem('sarri_surf_pb', String(pb)); }catch(e){}
+          toast('🏁 <b>NEW PB:</b> ' + fmt(pb) + ' — the ridge remembers.');
+        }
+      } else {
+        fanfare([880], 'triangle', 0.05);
+      }
+    }
     roll += ((on ? -vx * 0.006 : -yaw * 0.15) - roll) * Math.min(dt * 6, 1);
-    if (py < -26){
-      dead = 1.4;
+    if (py < BOT - 18){
+      dead = 1.1;
       const d = Math.floor(dist);
       if (d > best){
         best = d;
         try{ localStorage.setItem('sarri_surf_best', String(best)); }catch(e){}
         updBest();
-        toast('🔪 <b>NEW SURF RECORD:</b> ' + best + 'm. the ridge remembers.');
       }
     }
   }
@@ -1579,54 +1618,157 @@ function initSurf(){
     const dx = wx - px, dy = wy - py, dz = wz - pz;
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const rx = dx * c + dz * s;
-    const rz = -dx * s + dz * c;
+    const rz0 = -dx * s + dz * c;
+    const cp = Math.cos(pitch), sp = Math.sin(pitch);
+    const ry = dy * cp - rz0 * sp;
+    const rz = dy * sp + rz0 * cp;
     if (rz < 0.3) return null;
     const f = (H * 0.95) / rz;
-    return [W / 2 + rx * f, H / 2 - dy * f];
+    return [W / 2 + rx * f, H / 2 - ry * f];
   }
-  function drawKnife(t, HOT){
-    const bob = Math.sin(t * 0.004 * (1 + vz * 0.03)) * (3 + vz * 0.08);
-    const sw = clamp(vx * 0.9, -26, 26) + yaw * 30;
-    ctx.save();
-    ctx.translate(W - 130 + sw, H - 52 + bob);
-    ctx.rotate(-0.42 + roll * 0.5);
-    ctx.strokeStyle = HOT; ctx.lineWidth = 2;
-    ctx.fillStyle = 'rgba(0,0,0,.55)';
-    ctx.beginPath(); ctx.rect(6, -6, 52, 26); ctx.fill(); ctx.stroke();
+  function quad(a, b, c2, d, fill, alpha){
+    if (!a || !b || !c2 || !d) return;
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.moveTo(6, -2); ctx.lineTo(-96, -30); ctx.lineTo(-124, -10); ctx.lineTo(-42, 14); ctx.lineTo(6, 14);
+    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d[0], d[1]);
     ctx.closePath();
-    ctx.save(); ctx.globalAlpha = 0.12; ctx.fillStyle = HOT; ctx.fill(); ctx.restore();
-    ctx.stroke();
-    ctx.globalAlpha = 0.6;
-    ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(-92, -24); ctx.stroke();
+    ctx.fill();
     ctx.globalAlpha = 1;
+  }
+  function edge(a, b, color, width, alpha){
+    if (!a || !b) return;
+    ctx.globalAlpha = alpha;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+  function drawViewmodel(t, HOT){
+    const bob = Math.sin(t * 0.004 * (1 + vz * 0.03)) * (2.5 + vz * 0.06);
+    const sw = clamp(vx * 0.7, -22, 22) + yaw * 26;
+    const hx = W * 0.58 + sw, hy = H * 0.86 + bob;
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = '#2b331f';
+    ctx.fillStyle = '#57644a';
+    ctx.beginPath();
+    ctx.moveTo(W * 0.16 + sw * 0.5, H + 30);
+    ctx.lineTo(W * 0.36 + sw * 0.5, H + 30);
+    ctx.lineTo(hx - 26, hy + 30);
+    ctx.lineTo(hx - 72, hy + 44);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#66755a';
+    ctx.beginPath();
+    ctx.moveTo(W * 0.94 + sw * 0.5, H + 30);
+    ctx.lineTo(W * 0.72 + sw * 0.5, H + 30);
+    ctx.lineTo(hx + 30, hy + 20);
+    ctx.lineTo(hx + 78, hy + 38);
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#7a8a6c';
+    ctx.fillRect(hx - 40, hy + 12, 34, 24);
+    ctx.fillRect(hx + 8, hy + 4, 34, 26);
+    ctx.strokeRect(hx - 40, hy + 12, 34, 24);
+    ctx.strokeRect(hx + 8, hy + 4, 34, 26);
+    ctx.translate(hx + 12, hy + 8);
+    ctx.rotate(-0.5 + roll * 0.4);
+    ctx.fillStyle = '#141b15';
+    ctx.strokeStyle = '#0a0f0a';
+    ctx.beginPath(); ctx.rect(0, -7, 40, 15); ctx.fill(); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(0, -5);
+    ctx.quadraticCurveTo(-70, -34, -132, -30);
+    ctx.quadraticCurveTo(-84, -6, -34, 8);
+    ctx.lineTo(0, 8);
+    ctx.closePath();
+    ctx.fillStyle = '#1c2620';
+    ctx.fill();
+    ctx.strokeStyle = HOT;
+    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.85;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = '#d8ffe2';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-34, 6); ctx.quadraticCurveTo(-86, -8, -128, -28);
+    ctx.stroke();
     ctx.restore();
   }
   function drawHUD(HOT){
-    ctx.fillStyle = HOT;
-    ctx.font = '20px VT323, monospace';
+    const AMB = '#ffb347';
+    ctx.font = '19px VT323, monospace';
     ctx.textAlign = 'left';
-    ctx.fillText('SPEED ' + Math.round(vz * 10) + ' u/s', 14, 28);
-    ctx.fillText('DIST  ' + Math.floor(dist) + 'm', 14, 50);
-    ctx.textAlign = 'right';
-    ctx.globalAlpha = 0.7;
-    ctx.fillText('BEST ' + best + 'm', W - 14, 28);
+    ctx.fillStyle = HOT;
+    ctx.fillText('SPEED ' + Math.round(vz * 10) + ' u/s', 14, 26);
+    ctx.globalAlpha = 0.75;
+    ctx.fillText('BEST DIST ' + best + 'm', 14, 47);
     ctx.globalAlpha = 1;
     ctx.fillRect(W / 2 - 2, H / 2 - 2, 4, 4);
+    const pw = 178, pxl = W - pw - 12, pyt = 12, row = 25;
+    ctx.fillStyle = 'rgba(2,8,5,.74)';
+    ctx.fillRect(pxl, pyt, pw, 34 + row * 4);
+    ctx.strokeStyle = HOT; ctx.globalAlpha = 0.3;
+    ctx.strokeRect(pxl + 0.5, pyt + 0.5, pw - 1, 33 + row * 4);
+    ctx.globalAlpha = 1;
+    ctx.font = '20px VT323, monospace';
+    ctx.fillStyle = HOT;
+    ctx.fillText('ANY%', pxl + 10, pyt + 23);
+    ctx.textAlign = 'right';
+    ctx.fillText(got + '/4 ⚑', pxl + pw - 10, pyt + 23);
+    for (let i = 0; i < 4; i++){
+      const ry2 = pyt + 32 + i * row;
+      if (i === got && !runEnd){
+        ctx.globalAlpha = 0.18; ctx.fillStyle = AMB;
+        ctx.fillRect(pxl + 3, ry2 - 2, pw - 6, row - 3);
+        ctx.globalAlpha = 1;
+      }
+      ctx.fillStyle = i < got ? HOT : (i === got && !runEnd ? AMB : 'rgba(91,138,106,.9)');
+      ctx.textAlign = 'left';
+      ctx.fillText('POINT ' + (i + 1), pxl + 10, ry2 + 16);
+      ctx.textAlign = 'right';
+      ctx.fillText(splits[i] ? fmt(splits[i]) : '0:00.0', pxl + pw - 10, ry2 + 16);
+    }
+    const cur = runEnd || (runStart ? performance.now() - runStart : 0);
+    ctx.font = '46px VT323, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillStyle = HOT;
+    ctx.globalAlpha = 0.35;
+    ctx.fillText(fmt(cur), W - 13, H - 15);
+    ctx.globalAlpha = 1;
+    ctx.fillText(fmt(cur), W - 14, H - 16);
+    ctx.font = '16px VT323, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = 'rgba(2,8,5,.74)';
+    ctx.fillRect(12, H - 58, 218, 46);
+    ctx.fillStyle = AMB;
+    ctx.fillText('[B]', 20, H - 40);
+    ctx.fillText('[N]', 20, H - 21);
+    ctx.fillStyle = HOT;
+    ctx.fillText('RESET TO START', 52, H - 40);
+    ctx.fillText('LAST CHECKPOINT', 52, H - 21);
     ctx.textAlign = 'center';
+    if (flash > 0 && runEnd){
+      ctx.font = '34px VT323, monospace';
+      ctx.fillStyle = AMB;
+      ctx.fillText('RUN COMPLETE — ' + fmt(runEnd), W / 2, H / 2 - 40);
+      ctx.font = '17px VT323, monospace';
+      ctx.fillText('[B] to run it back', W / 2, H / 2 - 16);
+    }
     if (dead > 0){
       ctx.font = '30px VT323, monospace';
+      ctx.fillStyle = HOT;
       ctx.fillText('RAMP EXITED UNSUCCESSFULLY', W / 2, H / 2 - 30);
       ctx.font = '17px VT323, monospace';
-      ctx.fillText('respawning...', W / 2, H / 2 - 6);
+      ctx.fillText(got > 0 ? 'back to point ' + got + '...' : 'back to start...', W / 2, H / 2 - 6);
     } else if (!playing){
+      ctx.fillStyle = HOT;
       ctx.font = '34px VT323, monospace';
       ctx.fillText(FINE ? 'CLICK TO SURF' : 'TAP TO SURF', W / 2, H / 2 - 24);
       ctx.font = '16px VT323, monospace';
       ctx.globalAlpha = 0.7;
       ctx.fillText(FINE
-        ? 'mouse to look · hold A/D into the ramp · R to reset'
+        ? 'mouse to look · hold A/D into the ramp'
         : 'hold the left/right side of the screen to carve', W / 2, H / 2 + 6);
       ctx.globalAlpha = 1;
     }
@@ -1639,45 +1781,64 @@ function initSurf(){
     last = t;
     phys(dt);
     const HOT = hotColor();
-    ctx.fillStyle = '#030504';
+    const sky = ctx.createLinearGradient(0, 0, 0, H);
+    sky.addColorStop(0, '#0b1d10');
+    sky.addColorStop(0.45, '#030a05');
+    sky.addColorStop(0.62, '#000000');
+    sky.addColorStop(0.86, '#000000');
+    sky.addColorStop(1, '#0c2413');
+    ctx.fillStyle = sky;
     ctx.fillRect(0, 0, W, H);
     ctx.save();
     ctx.translate(W / 2, H / 2); ctx.rotate(roll); ctx.translate(-W / 2, -H / 2);
-    ctx.strokeStyle = HOT;
-    ctx.globalAlpha = 0.14;
-    ctx.beginPath(); ctx.moveTo(-60, H / 2); ctx.lineTo(W + 60, H / 2); ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.lineWidth = 1.4;
-    const STEP = 6;
-    let prev = null;
-    for (let z = Math.floor(pz / STEP) * STEP + STEP; z < pz + 240; z += STEP){
-      if (inGap(z)){ prev = null; continue; }
-      const cx = centerX(z);
-      const pk = project(cx, PEAK, z);
-      const lf = project(cx - HALF, PEAK - HALF * SLOPE, z);
-      const rt = project(cx + HALF, PEAK - HALF * SLOPE, z);
-      if (pk && lf && rt){
-        const fade = clamp(1 - (z - pz) / 240, 0, 1);
-        ctx.globalAlpha = fade * 0.85;
-        ctx.beginPath();
-        ctx.moveTo(lf[0], lf[1]); ctx.lineTo(pk[0], pk[1]); ctx.lineTo(rt[0], rt[1]);
-        ctx.stroke();
-        if (prev){
-          ctx.globalAlpha = fade;
-          ctx.beginPath();
-          ctx.moveTo(prev.pk[0], prev.pk[1]); ctx.lineTo(pk[0], pk[1]);
-          ctx.moveTo(prev.lf[0], prev.lf[1]); ctx.lineTo(lf[0], lf[1]);
-          ctx.moveTo(prev.rt[0], prev.rt[1]); ctx.lineTo(rt[0], rt[1]);
-          ctx.stroke();
-        }
-        prev = {pk, lf, rt};
-      } else prev = null;
-      ctx.globalAlpha = 1;
+    const STEP = 8, FAR = 260;
+    const lit = '#12301c', dim = '#0a2012', wall = '#03120a';
+    const onLeft = px < centerX(pz);
+    const zStart = Math.floor((pz + FAR) / STEP) * STEP;
+    for (let z = zStart; z >= pz + 2; z -= STEP){
+      if (inGap(z) || inGap(z + STEP)) continue;
+      const c0 = centerX(z), c1 = centerX(z + STEP + 0.5);
+      const fade = clamp(1 - (z - pz) / FAR, 0.06, 1);
+      const pk0 = project(c0, PEAK, z),            pk1 = project(c1, PEAK, z + STEP + 0.5);
+      const lb0 = project(c0 - HALF, BOT, z),      lb1 = project(c1 - HALF, BOT, z + STEP + 0.5);
+      const rb0 = project(c0 + HALF, BOT, z),      rb1 = project(c1 + HALF, BOT, z + STEP + 0.5);
+      const lw0 = project(c0 - HALF, BOT - 70, z), lw1 = project(c1 - HALF, BOT - 70, z + STEP + 0.5);
+      const rw0 = project(c0 + HALF, BOT - 70, z), rw1 = project(c1 + HALF, BOT - 70, z + STEP + 0.5);
+      quad(lb0, lb1, lw1, lw0, wall, fade);
+      quad(rb0, rb1, rw1, rw0, wall, fade);
+      quad(pk0, pk1, lb1, lb0, onLeft ? lit : dim, fade);
+      quad(pk0, pk1, rb1, rb0, onLeft ? dim : lit, fade);
+      edge(lb0, lb1, HOT, 1.2, fade * 0.35);
+      edge(rb0, rb1, HOT, 1.2, fade * 0.35);
+      edge(pk0, pk1, HOT, 3.4, fade * 0.28);
+      edge(pk0, pk1, HOT, 1.6, fade * 0.95);
+    }
+    for (let i = 0; i < 4; i++){
+      const gz = CPS[i];
+      if (gz < pz + 2 || gz > pz + FAR) continue;
+      const gcx = centerX(gz), gw = HALF + 2;
+      const bl = project(gcx - gw, BOT - 2, gz), tl = project(gcx - gw, PEAK + 7, gz);
+      const br = project(gcx + gw, BOT - 2, gz), tr = project(gcx + gw, PEAK + 7, gz);
+      const next = i === got && !runEnd;
+      const col = next ? '#ffb347' : HOT;
+      const pulse = next ? 0.55 + 0.35 * Math.sin(t / 140) : (i < got ? 0.25 : 0.45);
+      edge(bl, tl, col, 3, pulse);
+      edge(br, tr, col, 3, pulse);
+      edge(tl, tr, col, 3, pulse);
+      if (tl && tr){
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = col;
+        ctx.font = '18px VT323, monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('POINT ' + (i + 1), (tl[0] + tr[0]) / 2, Math.min(tl[1], tr[1]) - 8);
+        ctx.textAlign = 'left';
+        ctx.globalAlpha = 1;
+      }
     }
     ctx.restore();
-    drawKnife(t, HOT);
+    drawViewmodel(t, HOT);
     drawHUD(HOT);
-    if (!playing && dead <= 0){ cancelAnimationFrame(raf); raf = 0; }
+    if (!playing && dead <= 0 && flash <= 0){ cancelAnimationFrame(raf); raf = 0; }
   }
 }
 
