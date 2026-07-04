@@ -1483,7 +1483,7 @@ function initSurf(){
     pz = z; px = centerX(z) + 5;
     const h = surfH(px, pz);
     py = (h === null ? PEAK : h) + EYE;
-    vx = 0; vy = 0; vz = 18; yaw = 0; pitch = -0.06; dead = 0;
+    vx = 0; vy = 0; vz = 14; yaw = 0; pitch = -0.06; dead = 0;
   }
   function spawnStart(){
     pz = -5; px = PL.cx; py = PL.y + EYE;
@@ -1513,8 +1513,8 @@ function initSurf(){
   });
   window.addEventListener('mousemove', e => {
     if (!locked) return;
-    yaw = clamp(yaw + e.movementX * 0.0022, -1.2, 1.2);
-    pitch = clamp(pitch - e.movementY * 0.0018, -0.55, 0.35);
+    yaw = clamp(yaw + e.movementX * 0.0015, -1.2, 1.2);
+    pitch = clamp(pitch - e.movementY * 0.0013, -0.55, 0.35);
   }, {passive: true});
   window.addEventListener('keydown', e => {
     if (!playing) return;
@@ -1574,19 +1574,19 @@ function initSurf(){
       py = h + EYE;
       if (vy < 0) vy = 0;
       const side = px < centerX(pz) ? -1 : 1;
-      vx += side * 22 * dt;                       /* the ramp wants you gone */
+      vx += side * 16 * dt;                       /* the ramp wants you gone */
       if (strafe === -side){                      /* carving in: earn speed */
-        vz += 30 * dt;
-        vx += strafe * 36 * dt;
+        vz += 20 * dt;
+        vx += strafe * 30 * dt;
       } else if (strafe !== 0){
-        vx += strafe * 20 * dt;
+        vx += strafe * 18 * dt;
       }
-      vz = clamp(vz, 10, 110);
+      vz = clamp(vz, 10, 78);
     } else {
       vy -= 24 * dt;
       vx += strafe * 10 * dt;
-      if (strafe !== 0 && Math.abs(yaw) > 0.15 && (yaw > 0) === (strafe > 0)) vz += 8 * dt;
-      vz = clamp(vz, -12, 110);
+      if (strafe !== 0 && Math.abs(yaw) > 0.15 && (yaw > 0) === (strafe > 0)) vz += 6 * dt;
+      vz = clamp(vz, -12, 78);
     }
     vx = clamp(vx, -48, 48);
     px += vx * dt; py += vy * dt; pz += vz * dt;
@@ -1635,34 +1635,69 @@ function initSurf(){
   function hotColor(){
     return getComputedStyle(document.documentElement).getPropertyValue('--hot').trim() || '#3dff7c';
   }
-  function project(wx, wy, wz){
+  const NEAR = 0.3;
+  function toCam(wx, wy, wz){
     const dx = wx - px, dy = wy - py, dz = wz - pz;
     const c = Math.cos(yaw), s = Math.sin(yaw);
     const rx = dx * c - dz * s;
     const rz0 = dx * s + dz * c;
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
-    const ry = dy * cp - rz0 * sp;
-    const rz = dy * sp + rz0 * cp;
-    if (rz < 0.3) return null;
-    const f = (H * 0.95) / rz;
-    return [W / 2 + rx * f, H / 2 - ry * f];
+    return [rx, dy * cp - rz0 * sp, dy * sp + rz0 * cp];
   }
-  function quad(a, b, c2, d, fill, alpha){
-    if (!a || !b || !c2 || !d) return;
+  function projCam(p){
+    const f = (H * 0.95) / p[2];
+    return [W / 2 + p[0] * f, H / 2 - p[1] * f];
+  }
+  function project(wx, wy, wz){
+    const p = toCam(wx, wy, wz);
+    if (p[2] < NEAR) return null;
+    return projCam(p);
+  }
+  /* clip polygon against the near plane instead of culling it —
+     no more see-through ramp when geometry passes the camera */
+  function clipNear(pts){
+    const out = [];
+    for (let i = 0; i < pts.length; i++){
+      const a = pts[i], b = pts[(i + 1) % pts.length];
+      const ain = a[2] >= NEAR, bin = b[2] >= NEAR;
+      if (ain) out.push(a);
+      if (ain !== bin){
+        const t = (NEAR - a[2]) / (b[2] - a[2]);
+        out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, NEAR]);
+      }
+    }
+    return out;
+  }
+  function poly3(cams, fill, alpha){
+    const cl = clipNear(cams);
+    if (cl.length < 3) return;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = fill;
     ctx.beginPath();
-    ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c2[0], c2[1]); ctx.lineTo(d[0], d[1]);
+    const p0 = projCam(cl[0]);
+    ctx.moveTo(p0[0], p0[1]);
+    for (let i = 1; i < cl.length; i++){
+      const p = projCam(cl[i]);
+      ctx.lineTo(p[0], p[1]);
+    }
     ctx.closePath();
     ctx.fill();
     ctx.globalAlpha = 1;
   }
-  function edge(a, b, color, width, alpha){
-    if (!a || !b) return;
+  function line3(a, b, color, width, alpha){
+    let pa = a, pb = b;
+    const ain = pa[2] >= NEAR, bin = pb[2] >= NEAR;
+    if (!ain && !bin) return;
+    if (ain !== bin){
+      const t = (NEAR - pa[2]) / (pb[2] - pa[2]);
+      const m = [pa[0] + (pb[0] - pa[0]) * t, pa[1] + (pb[1] - pa[1]) * t, NEAR];
+      if (ain) pb = m; else pa = m;
+    }
+    const A = projCam(pa), B = projCam(pb);
     ctx.globalAlpha = alpha;
     ctx.strokeStyle = color;
     ctx.lineWidth = width;
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(A[0], A[1]); ctx.lineTo(B[0], B[1]); ctx.stroke();
     ctx.globalAlpha = 1;
   }
   function drawViewmodel(t, HOT){
@@ -1820,64 +1855,67 @@ function initSurf(){
     const lit = '#12301c', dim = '#0a2012', wall = '#03120a';
     const onLeft = px < centerX(pz);
     const zStart = Math.floor((pz + FAR) / STEP) * STEP;
-    for (let z = zStart; z >= pz + 2; z -= STEP){
+    for (let z = zStart; z >= pz - 10; z -= STEP){
       if (z < 8 || inGap(z) || inGap(z + STEP)) continue;
-      const c0 = centerX(z), c1 = centerX(z + STEP + 0.5);
+      const zf = z + STEP + 0.5;
+      const c0 = centerX(z), c1 = centerX(zf);
       const fade = clamp(1 - (z - pz) / FAR, 0.06, 1);
-      const pk0 = project(c0, PEAK, z),            pk1 = project(c1, PEAK, z + STEP + 0.5);
-      const lb0 = project(c0 - HALF, BOT, z),      lb1 = project(c1 - HALF, BOT, z + STEP + 0.5);
-      const rb0 = project(c0 + HALF, BOT, z),      rb1 = project(c1 + HALF, BOT, z + STEP + 0.5);
-      const lw0 = project(c0 - HALF, BOT - 70, z), lw1 = project(c1 - HALF, BOT - 70, z + STEP + 0.5);
-      const rw0 = project(c0 + HALF, BOT - 70, z), rw1 = project(c1 + HALF, BOT - 70, z + STEP + 0.5);
-      quad(lb0, lb1, lw1, lw0, wall, fade);
-      quad(rb0, rb1, rw1, rw0, wall, fade);
-      quad(pk0, pk1, lb1, lb0, onLeft ? lit : dim, fade);
-      quad(pk0, pk1, rb1, rb0, onLeft ? dim : lit, fade);
-      edge(lb0, lb1, HOT, 1.2, fade * 0.35);
-      edge(rb0, rb1, HOT, 1.2, fade * 0.35);
-      edge(pk0, pk1, HOT, 3.4, fade * 0.28);
-      edge(pk0, pk1, HOT, 1.6, fade * 0.95);
-      const gl0 = project(c0 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
-      const gl1 = project(c1 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z + STEP + 0.5);
-      const gr0 = project(c0 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
-      const gr1 = project(c1 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z + STEP + 0.5);
-      edge(gl0, gl1, HOT, 1, fade * 0.16);
-      edge(gr0, gr1, HOT, 1, fade * 0.16);
+      const pk0 = toCam(c0, PEAK, z),            pk1 = toCam(c1, PEAK, zf);
+      const lb0 = toCam(c0 - HALF, BOT, z),      lb1 = toCam(c1 - HALF, BOT, zf);
+      const rb0 = toCam(c0 + HALF, BOT, z),      rb1 = toCam(c1 + HALF, BOT, zf);
+      const lw0 = toCam(c0 - HALF, BOT - 70, z), lw1 = toCam(c1 - HALF, BOT - 70, zf);
+      const rw0 = toCam(c0 + HALF, BOT - 70, z), rw1 = toCam(c1 + HALF, BOT - 70, zf);
+      poly3([lb0, lb1, lw1, lw0], wall, fade);
+      poly3([rb0, rb1, rw1, rw0], wall, fade);
+      poly3([pk0, pk1, lb1, lb0], onLeft ? lit : dim, fade);
+      poly3([pk0, pk1, rb1, rb0], onLeft ? dim : lit, fade);
+      line3(lb0, lb1, HOT, 1.2, fade * 0.35);
+      line3(rb0, rb1, HOT, 1.2, fade * 0.35);
+      line3(pk0, pk1, HOT, 3.4, fade * 0.28);
+      line3(pk0, pk1, HOT, 1.6, fade * 0.95);
+      const gl0 = toCam(c0 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
+      const gl1 = toCam(c1 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, zf);
+      const gr0 = toCam(c0 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
+      const gr1 = toCam(c1 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, zf);
+      line3(gl0, gl1, HOT, 1, fade * 0.16);
+      line3(gr0, gr1, HOT, 1, fade * 0.16);
       if (z % 32 < STEP){
-        edge(pk0, lb0, HOT, 1, fade * 0.14);
-        edge(pk0, rb0, HOT, 1, fade * 0.14);
+        line3(pk0, lb0, HOT, 1, fade * 0.14);
+        line3(pk0, rb0, HOT, 1, fade * 0.14);
       }
     }
     /* start platform */
     {
-      const tl0 = project(PL.cx - PL.hw, PL.y, PL.z0), tr0 = project(PL.cx + PL.hw, PL.y, PL.z0);
-      const tl1 = project(PL.cx - PL.hw, PL.y, PL.z1), tr1 = project(PL.cx + PL.hw, PL.y, PL.z1);
-      const bl1 = project(PL.cx - PL.hw, PL.y - 34, PL.z1), br1 = project(PL.cx + PL.hw, PL.y - 34, PL.z1);
-      quad(tl1, tr1, br1, bl1, '#051710', 1);
-      quad(tl0, tr0, tr1, tl1, '#0e2a18', 1);
-      edge(tl1, tr1, HOT, 2.6, 0.9);
-      edge(tl0, tl1, HOT, 1.4, 0.5);
-      edge(tr0, tr1, HOT, 1.4, 0.5);
-      edge(tl0, tr0, HOT, 1.4, 0.35);
+      const tl0 = toCam(PL.cx - PL.hw, PL.y, PL.z0), tr0 = toCam(PL.cx + PL.hw, PL.y, PL.z0);
+      const tl1 = toCam(PL.cx - PL.hw, PL.y, PL.z1), tr1 = toCam(PL.cx + PL.hw, PL.y, PL.z1);
+      const bl1 = toCam(PL.cx - PL.hw, PL.y - 34, PL.z1), br1 = toCam(PL.cx + PL.hw, PL.y - 34, PL.z1);
+      poly3([tl1, tr1, br1, bl1], '#051710', 1);
+      poly3([tl0, tr0, tr1, tl1], '#0e2a18', 1);
+      line3(tl1, tr1, HOT, 2.6, 0.9);
+      line3(tl0, tl1, HOT, 1.4, 0.5);
+      line3(tr0, tr1, HOT, 1.4, 0.5);
+      line3(tl0, tr0, HOT, 1.4, 0.35);
     }
     for (let i = 0; i < 4; i++){
       const gz = CPS[i];
       if (gz < pz + 2 || gz > pz + FAR) continue;
       const gcx = centerX(gz), gw = HALF + 2;
-      const bl = project(gcx - gw, BOT - 2, gz), tl = project(gcx - gw, PEAK + 7, gz);
-      const br = project(gcx + gw, BOT - 2, gz), tr = project(gcx + gw, PEAK + 7, gz);
+      const bl = toCam(gcx - gw, BOT - 2, gz), tl = toCam(gcx - gw, PEAK + 7, gz);
+      const br = toCam(gcx + gw, BOT - 2, gz), tr = toCam(gcx + gw, PEAK + 7, gz);
       const next = i === got && !runEnd;
       const col = next ? '#ffb347' : HOT;
       const pulse = next ? 0.55 + 0.35 * Math.sin(t / 140) : (i < got ? 0.25 : 0.45);
-      edge(bl, tl, col, 3, pulse);
-      edge(br, tr, col, 3, pulse);
-      edge(tl, tr, col, 3, pulse);
-      if (tl && tr){
+      line3(bl, tl, col, 3, pulse);
+      line3(br, tr, col, 3, pulse);
+      line3(tl, tr, col, 3, pulse);
+      const sl = tl[2] >= NEAR ? projCam(tl) : null;
+      const sr = tr[2] >= NEAR ? projCam(tr) : null;
+      if (sl && sr){
         ctx.globalAlpha = pulse;
         ctx.fillStyle = col;
         ctx.font = '18px VT323, monospace';
         ctx.textAlign = 'center';
-        ctx.fillText('POINT ' + (i + 1), (tl[0] + tr[0]) / 2, Math.min(tl[1], tr[1]) - 8);
+        ctx.fillText('POINT ' + (i + 1), (sl[0] + sr[0]) / 2, Math.min(sl[1], sr[1]) - 8);
         ctx.textAlign = 'left';
         ctx.globalAlpha = 1;
       }
