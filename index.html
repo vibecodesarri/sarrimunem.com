@@ -617,7 +617,7 @@ footer .secret-hint b{color:var(--amber);font-weight:400}
     <div class="win-body">
       <canvas id="surf-cv" aria-label="surf minigame: ride the wireframe ridge, hold A or D to carve into the ramp"></canvas>
       <div id="surf-hint">
-        <span>carve <kbd>A</kbd><kbd>D</kbd> into the ramp · look <kbd>mouse</kbd> · <kbd>B</kbd> reset run · <kbd>N</kbd> last checkpoint</span>
+        <span>walk <kbd>W</kbd> · jump <kbd>space</kbd> · carve <kbd>A</kbd><kbd>D</kbd> into the ramp · <kbd>B</kbd> reset run · <kbd>N</kbd> last checkpoint</span>
         <span>speed is earned, not given. don't look down.</span>
       </div>
     </div>
@@ -1456,8 +1456,9 @@ function initSurf(){
   const HALF = 14, SLOPE = 0.75, PEAK = 8, EYE = 1.7, BOT = PEAK - HALF * SLOPE;
   const centerX = z => Math.sin(z * 0.012) * 26 + Math.sin(z * 0.0045) * 40;
   const inGap = z => z > 260 && (z % 300) > 284;
+  const PL = { z0: -12, z1: 6, cx: centerX(8), hw: 9, y: PEAK + 4 };   /* start platform */
   function surfH(x, z){
-    if (inGap(z)) return null;
+    if (z < 8 || inGap(z)) return null;
     const dx = Math.abs(x - centerX(z));
     if (dx > HALF) return null;
     return PEAK - dx * SLOPE;
@@ -1484,11 +1485,15 @@ function initSurf(){
     py = (h === null ? PEAK : h) + EYE;
     vx = 0; vy = 0; vz = 18; yaw = 0; pitch = -0.06; dead = 0;
   }
+  function spawnStart(){
+    pz = -5; px = PL.cx; py = PL.y + EYE;
+    vx = 0; vy = 0; vz = 0; yaw = 0; pitch = -0.05; dead = 0;
+  }
   function resetRun(){
     splits = [0, 0, 0, 0]; got = 0; runStart = 0; runEnd = 0; dist = 0; flash = 0;
-    spawn(4);
+    spawnStart();
   }
-  function respawnCp(){ spawn(got > 0 ? CPS[got - 1] + 4 : 4); }
+  function respawnCp(){ if (got > 0) spawn(CPS[got - 1] + 4); else spawnStart(); }
   resetRun();
 
   /* input */
@@ -1516,7 +1521,7 @@ function initSurf(){
     const a = document.activeElement;
     if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
     const k = e.key.toLowerCase();
-    if (k === 'a' || k === 'd' || k === 'r' || k === 'b' || k === 'n' || k === 'arrowleft' || k === 'arrowright'){
+    if (k === 'a' || k === 'd' || k === 'w' || k === 's' || k === ' ' || k === 'r' || k === 'b' || k === 'n' || k === 'arrowleft' || k === 'arrowright'){
       keys[k] = true;
       e.preventDefault();
     }
@@ -1552,10 +1557,20 @@ function initSurf(){
     if (keys.arrowleft)  yaw = clamp(yaw - 1.8 * dt, -1.2, 1.2);
     if (keys.arrowright) yaw = clamp(yaw + 1.8 * dt, -1.2, 1.2);
     const strafe = (keys.a ? -1 : 0) + (keys.d ? 1 : 0) + touchDir;
-    if (!runStart && !runEnd && strafe !== 0) runStart = performance.now();
+    const fwd = (keys.w ? 1 : 0) - (keys.s ? 1 : 0) + (touchDir !== 0 ? 0.6 : 0);
+    const onPlat = pz >= PL.z0 && pz <= PL.z1 && Math.abs(px - PL.cx) <= PL.hw
+                   && (py - EYE) <= PL.y + 0.4 && vy <= 4;
     const h = surfH(px, pz);
-    const on = h !== null && (py - EYE) <= h + 0.35 && vy <= 4;
-    if (on){
+    const on = !onPlat && h !== null && (py - EYE) <= h + 0.35 && vy <= 4;
+    if (onPlat){
+      py = PL.y + EYE;
+      if (vy < 0) vy = 0;
+      const sy = Math.sin(yaw), cy = Math.cos(yaw);
+      const k = Math.min(dt * 8, 1);
+      vx += ((sy * fwd + cy * strafe) * 9 - vx) * k;
+      vz += ((cy * fwd - sy * strafe) * 9 - vz) * k;
+      if (keys[' ']){ keys[' '] = false; vy = 8; }
+    } else if (on){
       py = h + EYE;
       if (vy < 0) vy = 0;
       const side = px < centerX(pz) ? -1 : 1;
@@ -1566,16 +1581,21 @@ function initSurf(){
       } else if (strafe !== 0){
         vx += strafe * 20 * dt;
       }
+      vz = clamp(vz, 10, 110);
     } else {
       vy -= 24 * dt;
       vx += strafe * 10 * dt;
       if (strafe !== 0 && Math.abs(yaw) > 0.15 && (yaw > 0) === (strafe > 0)) vz += 8 * dt;
+      vz = clamp(vz, -12, 110);
     }
     vx = clamp(vx, -48, 48);
-    vz = clamp(vz, 10, 110);
     px += vx * dt; py += vy * dt; pz += vz * dt;
+    if (!runStart && !runEnd && pz > PL.z1 + 0.5) runStart = performance.now();
     const h2 = surfH(px, pz);
     if (h2 !== null && (py - EYE) < h2){ py = h2 + EYE; if (vy < 0) vy = 0; }
+    if (pz >= PL.z0 && pz <= PL.z1 && Math.abs(px - PL.cx) <= PL.hw && (py - EYE) < PL.y && vy <= 0){
+      py = PL.y + EYE; vy = 0;
+    }
     if (pz > dist) dist = pz;
     if (!locked && FINE === false){
       yaw += (Math.atan2(vx, Math.max(vz, 1)) * 0.6 - yaw) * Math.min(dt * 3, 1);
@@ -1611,14 +1631,15 @@ function initSurf(){
   }
 
   /* render */
+  let HOTc = '#3dff7c', hotTick = 0, skyGrad = null, skyH = 0;
   function hotColor(){
     return getComputedStyle(document.documentElement).getPropertyValue('--hot').trim() || '#3dff7c';
   }
   function project(wx, wy, wz){
     const dx = wx - px, dy = wy - py, dz = wz - pz;
     const c = Math.cos(yaw), s = Math.sin(yaw);
-    const rx = dx * c + dz * s;
-    const rz0 = -dx * s + dz * c;
+    const rx = dx * c - dz * s;
+    const rz0 = dx * s + dz * c;
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
     const ry = dy * cp - rz0 * sp;
     const rz = dy * sp + rz0 * cp;
@@ -1768,8 +1789,8 @@ function initSurf(){
       ctx.font = '16px VT323, monospace';
       ctx.globalAlpha = 0.7;
       ctx.fillText(FINE
-        ? 'mouse to look · hold A/D into the ramp'
-        : 'hold the left/right side of the screen to carve', W / 2, H / 2 + 6);
+        ? 'W to walk off the platform · carve A/D into the ramp'
+        : 'tap-hold to move · hold left/right side to carve', W / 2, H / 2 + 6);
       ctx.globalAlpha = 1;
     }
     ctx.textAlign = 'left';
@@ -1780,14 +1801,18 @@ function initSurf(){
     const dt = Math.min((t - last) / 1000, 0.033);
     last = t;
     phys(dt);
-    const HOT = hotColor();
-    const sky = ctx.createLinearGradient(0, 0, 0, H);
-    sky.addColorStop(0, '#0b1d10');
-    sky.addColorStop(0.45, '#030a05');
-    sky.addColorStop(0.62, '#000000');
-    sky.addColorStop(0.86, '#000000');
-    sky.addColorStop(1, '#0c2413');
-    ctx.fillStyle = sky;
+    if ((hotTick++ & 31) === 0) HOTc = hotColor();
+    const HOT = HOTc;
+    if (!skyGrad || skyH !== H){
+      skyH = H;
+      skyGrad = ctx.createLinearGradient(0, 0, 0, H);
+      skyGrad.addColorStop(0, '#0b1d10');
+      skyGrad.addColorStop(0.45, '#030a05');
+      skyGrad.addColorStop(0.62, '#000000');
+      skyGrad.addColorStop(0.86, '#000000');
+      skyGrad.addColorStop(1, '#0c2413');
+    }
+    ctx.fillStyle = skyGrad;
     ctx.fillRect(0, 0, W, H);
     ctx.save();
     ctx.translate(W / 2, H / 2); ctx.rotate(roll); ctx.translate(-W / 2, -H / 2);
@@ -1796,7 +1821,7 @@ function initSurf(){
     const onLeft = px < centerX(pz);
     const zStart = Math.floor((pz + FAR) / STEP) * STEP;
     for (let z = zStart; z >= pz + 2; z -= STEP){
-      if (inGap(z) || inGap(z + STEP)) continue;
+      if (z < 8 || inGap(z) || inGap(z + STEP)) continue;
       const c0 = centerX(z), c1 = centerX(z + STEP + 0.5);
       const fade = clamp(1 - (z - pz) / FAR, 0.06, 1);
       const pk0 = project(c0, PEAK, z),            pk1 = project(c1, PEAK, z + STEP + 0.5);
@@ -1812,6 +1837,28 @@ function initSurf(){
       edge(rb0, rb1, HOT, 1.2, fade * 0.35);
       edge(pk0, pk1, HOT, 3.4, fade * 0.28);
       edge(pk0, pk1, HOT, 1.6, fade * 0.95);
+      const gl0 = project(c0 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
+      const gl1 = project(c1 - HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z + STEP + 0.5);
+      const gr0 = project(c0 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z);
+      const gr1 = project(c1 + HALF * 0.5, PEAK - HALF * 0.5 * SLOPE, z + STEP + 0.5);
+      edge(gl0, gl1, HOT, 1, fade * 0.16);
+      edge(gr0, gr1, HOT, 1, fade * 0.16);
+      if (z % 32 < STEP){
+        edge(pk0, lb0, HOT, 1, fade * 0.14);
+        edge(pk0, rb0, HOT, 1, fade * 0.14);
+      }
+    }
+    /* start platform */
+    {
+      const tl0 = project(PL.cx - PL.hw, PL.y, PL.z0), tr0 = project(PL.cx + PL.hw, PL.y, PL.z0);
+      const tl1 = project(PL.cx - PL.hw, PL.y, PL.z1), tr1 = project(PL.cx + PL.hw, PL.y, PL.z1);
+      const bl1 = project(PL.cx - PL.hw, PL.y - 34, PL.z1), br1 = project(PL.cx + PL.hw, PL.y - 34, PL.z1);
+      quad(tl1, tr1, br1, bl1, '#051710', 1);
+      quad(tl0, tr0, tr1, tl1, '#0e2a18', 1);
+      edge(tl1, tr1, HOT, 2.6, 0.9);
+      edge(tl0, tl1, HOT, 1.4, 0.5);
+      edge(tr0, tr1, HOT, 1.4, 0.5);
+      edge(tl0, tr0, HOT, 1.4, 0.35);
     }
     for (let i = 0; i < 4; i++){
       const gz = CPS[i];
