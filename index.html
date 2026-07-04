@@ -369,6 +369,12 @@ h1.glitch.detonate .ch{
 .card-link{font-size:12px;letter-spacing:.14em;text-transform:uppercase;width:fit-content}
 .card-link::after{content:' ↗'}
 
+/* ── surf_ridge.exe ─────────────────────────────────────────────── */
+#surf .win-body{padding:0}
+#surf-cv{display:block;width:100%;height:min(440px,58vh);background:#030504;cursor:crosshair;touch-action:none}
+#surf-hint{padding:8px 18px;border-top:1px solid var(--border);color:var(--ink-dim);font-size:11px;letter-spacing:.12em;display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}
+#surf-hint kbd{border:1px solid var(--border-hi);padding:0 5px;color:var(--amber);font-family:inherit}
+
 /* ── contact / footer ───────────────────────────────────────────── */
 #uplink .win-body{text-align:center;padding:clamp(30px,6vw,60px)}
 #uplink h2{font-family:var(--font-hud);font-weight:400;font-size:clamp(2rem,6vw,3.6rem);color:var(--hot);text-shadow:var(--glow);margin-bottom:10px}
@@ -597,6 +603,22 @@ footer .secret-hint b{color:var(--amber);font-weight:400}
         <a class="btn amber" data-magnetic href="mailto:email@sarrimunem.com">email@sarrimunem.com</a>
         <a class="btn" data-magnetic href="https://github.com/vibecodesarri" target="_blank" rel="noopener">github.com/vibecodesarri</a>
         <a class="btn" data-magnetic href="https://www.linkedin.com/in/sarrimunem/" target="_blank" rel="noopener">linkedin.com/in/sarrimunem</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══ SURF ═══ -->
+  <section id="surf" class="win reveal" aria-labelledby="surf-title">
+    <div class="win-bar">
+      <span class="dots"><button class="x" aria-label="close (decorative)"></button><button aria-label="minimize (decorative)"></button><button aria-label="zoom (decorative)"></button></span>
+      <span class="title" id="surf-title">surf_ridge.exe — hold the line</span>
+      <span class="stat" id="surf-best">BEST 0m</span>
+    </div>
+    <div class="win-body">
+      <canvas id="surf-cv" aria-label="surf minigame: ride the wireframe ridge, hold A or D to carve into the ramp"></canvas>
+      <div id="surf-hint">
+        <span>carve <kbd>A</kbd><kbd>D</kbd> into the ramp · look <kbd>mouse</kbd> · reset <kbd>R</kbd> · escape <kbd>esc</kbd></span>
+        <span>speed is earned, not given. don't look down.</span>
       </div>
     </div>
   </section>
@@ -1029,6 +1051,12 @@ const Term = (function(){
       else if (t === 'green'){ delete document.documentElement.dataset.theme; print('phosphor swapped: <span class="hot">green</span>. the classics never die.'); }
       else print('usage: theme amber | theme green', 'sys');
     }},
+    surf: { d: 'take the knife to the ridge', f(){
+      print('loading surf_ridge.exe .......... <span class="hot">OK</span>');
+      print('hold <span class="amb">A/D</span> into the ramp. speed is earned. do not look down.', 'sys');
+      const s = document.getElementById('surf');
+      if (s) s.scrollIntoView({behavior: REDUCED ? 'auto' : 'smooth'});
+    }},
     banner: { d: 'print the letterhead', f(){ print(BANNER, 'art'); }},
     neofetch: { d: 'flex the specs', f(){
       print([
@@ -1410,6 +1438,249 @@ function initBall(){
   draw();
 }
 
+/* 7h — surf_ridge.exe : first-person wireframe knife surf ───────── */
+function initSurf(){
+  const cv = $('#surf-cv');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const bestEl = $('#surf-best');
+  let W = 2, H = 2;
+  function size(){
+    const dpr = clamp(window.devicePixelRatio || 1, 1, 2);
+    W = cv.clientWidth || 2; H = cv.clientHeight || 2;
+    cv.width = Math.floor(W * dpr); cv.height = Math.floor(H * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  /* world: an endless curving ridge. peak in the middle, void either side. */
+  const HALF = 14, SLOPE = 0.75, PEAK = 8, EYE = 1.7;
+  const centerX = z => Math.sin(z * 0.012) * 26 + Math.sin(z * 0.0045) * 40;
+  const inGap = z => z > 220 && (z % 240) > 222;
+  function surfH(x, z){
+    if (inGap(z)) return null;
+    const dx = Math.abs(x - centerX(z));
+    if (dx > HALF) return null;
+    return PEAK - dx * SLOPE;
+  }
+
+  /* player */
+  let px, py, pz, vx, vy, vz, yaw = 0, roll = 0, dead = 0, dist = 0;
+  let best = 0;
+  try{ best = Math.floor(+localStorage.getItem('sarri_surf_best')) || 0; }catch(e){}
+  function updBest(){ if (bestEl) bestEl.textContent = 'BEST ' + best + 'm'; }
+  updBest();
+  function reset(){
+    pz = 4; px = centerX(4) + 5;
+    const h = surfH(px, pz);
+    py = (h === null ? PEAK : h) + EYE;
+    vx = 0; vy = 0; vz = 16; yaw = 0; dead = 0; dist = 0;
+  }
+  reset();
+
+  /* input */
+  const keys = {};
+  let playing = false, locked = false, touchDir = 0, visible = false, raf = 0, last = 0;
+  function wake(){ if (!raf){ size(); last = performance.now(); raf = requestAnimationFrame(frame); } }
+  cv.addEventListener('click', () => {
+    playing = true;
+    if (FINE && !locked){ try{ cv.requestPointerLock(); }catch(e){} }
+    wake();
+  });
+  document.addEventListener('pointerlockchange', () => {
+    const was = locked;
+    locked = document.pointerLockElement === cv;
+    if (was && !locked) playing = false;       /* esc pressed → pause */
+    wake();
+  });
+  window.addEventListener('mousemove', e => {
+    if (locked) yaw = clamp(yaw + e.movementX * 0.0022, -1.2, 1.2);
+  }, {passive: true});
+  window.addEventListener('keydown', e => {
+    if (!playing) return;
+    const a = document.activeElement;
+    if (a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')) return;
+    const k = e.key.toLowerCase();
+    if (k === 'a' || k === 'd' || k === 'r' || k === 'arrowleft' || k === 'arrowright'){
+      keys[k] = true;
+      e.preventDefault();
+    }
+  });
+  window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+  cv.addEventListener('touchstart', e => {
+    e.preventDefault();
+    playing = true; wake();
+    const t = e.touches[0], r = cv.getBoundingClientRect();
+    touchDir = (t.clientX - r.left) < r.width / 2 ? -1 : 1;
+  }, {passive: false});
+  cv.addEventListener('touchmove', e => { e.preventDefault(); }, {passive: false});
+  cv.addEventListener('touchend', e => { e.preventDefault(); touchDir = 0; }, {passive: false});
+  window.addEventListener('resize', () => { if (raf) size(); });
+  if ('IntersectionObserver' in window){
+    new IntersectionObserver(en => {
+      visible = en[0].isIntersecting;
+      if (visible) wake();
+    }, {threshold: 0.12}).observe(cv);
+  } else { visible = true; wake(); }
+
+  /* physics: gravity slides you down the face; carving into the ramp = speed */
+  function phys(dt){
+    if (dead > 0){
+      dead -= dt;
+      if (dead <= 0) reset();
+      return;
+    }
+    if (!playing) return;
+    if (keys.r){ keys.r = false; reset(); return; }
+    if (keys.arrowleft)  yaw = clamp(yaw - 1.8 * dt, -1.2, 1.2);
+    if (keys.arrowright) yaw = clamp(yaw + 1.8 * dt, -1.2, 1.2);
+    const strafe = (keys.a ? -1 : 0) + (keys.d ? 1 : 0) + touchDir;
+    const h = surfH(px, pz);
+    const on = h !== null && (py - EYE) <= h + 0.2 && vy <= 4;
+    if (on){
+      py = h + EYE;
+      if (vy < 0) vy = 0;
+      const side = px < centerX(pz) ? -1 : 1;
+      vx += side * 26 * dt;                       /* the ramp wants you gone */
+      if (strafe === -side){                      /* carving in: earn speed */
+        vz += 26 * dt;
+        vx += strafe * 34 * dt;
+      } else if (strafe !== 0){
+        vx += strafe * 20 * dt;
+      }
+    } else {
+      vy -= 24 * dt;
+      vx += strafe * 9 * dt;
+      if (strafe !== 0 && Math.abs(yaw) > 0.15 && (yaw > 0) === (strafe > 0)) vz += 8 * dt;
+    }
+    vx = clamp(vx, -46, 46);
+    vz = clamp(vz, 10, 95);
+    px += vx * dt; py += vy * dt; pz += vz * dt;
+    const h2 = surfH(px, pz);
+    if (h2 !== null && (py - EYE) < h2){ py = h2 + EYE; if (vy < 0) vy = 0; }
+    if (pz > dist) dist = pz;
+    roll += ((on ? -vx * 0.006 : -yaw * 0.15) - roll) * Math.min(dt * 6, 1);
+    if (py < -26){
+      dead = 1.4;
+      const d = Math.floor(dist);
+      if (d > best){
+        best = d;
+        try{ localStorage.setItem('sarri_surf_best', String(best)); }catch(e){}
+        updBest();
+        toast('🔪 <b>NEW SURF RECORD:</b> ' + best + 'm. the ridge remembers.');
+      }
+    }
+  }
+
+  /* render */
+  function hotColor(){
+    return getComputedStyle(document.documentElement).getPropertyValue('--hot').trim() || '#3dff7c';
+  }
+  function project(wx, wy, wz){
+    const dx = wx - px, dy = wy - py, dz = wz - pz;
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    const rx = dx * c + dz * s;
+    const rz = -dx * s + dz * c;
+    if (rz < 0.3) return null;
+    const f = (H * 0.95) / rz;
+    return [W / 2 + rx * f, H / 2 - dy * f];
+  }
+  function drawKnife(t, HOT){
+    const bob = Math.sin(t * 0.004 * (1 + vz * 0.03)) * (3 + vz * 0.08);
+    const sw = clamp(vx * 0.9, -26, 26) + yaw * 30;
+    ctx.save();
+    ctx.translate(W - 130 + sw, H - 52 + bob);
+    ctx.rotate(-0.42 + roll * 0.5);
+    ctx.strokeStyle = HOT; ctx.lineWidth = 2;
+    ctx.fillStyle = 'rgba(0,0,0,.55)';
+    ctx.beginPath(); ctx.rect(6, -6, 52, 26); ctx.fill(); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(6, -2); ctx.lineTo(-96, -30); ctx.lineTo(-124, -10); ctx.lineTo(-42, 14); ctx.lineTo(6, 14);
+    ctx.closePath();
+    ctx.save(); ctx.globalAlpha = 0.12; ctx.fillStyle = HOT; ctx.fill(); ctx.restore();
+    ctx.stroke();
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath(); ctx.moveTo(0, -4); ctx.lineTo(-92, -24); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.restore();
+  }
+  function drawHUD(HOT){
+    ctx.fillStyle = HOT;
+    ctx.font = '20px VT323, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('SPEED ' + Math.round(vz * 10) + ' u/s', 14, 28);
+    ctx.fillText('DIST  ' + Math.floor(dist) + 'm', 14, 50);
+    ctx.textAlign = 'right';
+    ctx.globalAlpha = 0.7;
+    ctx.fillText('BEST ' + best + 'm', W - 14, 28);
+    ctx.globalAlpha = 1;
+    ctx.fillRect(W / 2 - 2, H / 2 - 2, 4, 4);
+    ctx.textAlign = 'center';
+    if (dead > 0){
+      ctx.font = '30px VT323, monospace';
+      ctx.fillText('RAMP EXITED UNSUCCESSFULLY', W / 2, H / 2 - 30);
+      ctx.font = '17px VT323, monospace';
+      ctx.fillText('respawning...', W / 2, H / 2 - 6);
+    } else if (!playing){
+      ctx.font = '34px VT323, monospace';
+      ctx.fillText(FINE ? 'CLICK TO SURF' : 'TAP TO SURF', W / 2, H / 2 - 24);
+      ctx.font = '16px VT323, monospace';
+      ctx.globalAlpha = 0.7;
+      ctx.fillText(FINE
+        ? 'mouse to look · hold A/D into the ramp · R to reset'
+        : 'hold the left/right side of the screen to carve', W / 2, H / 2 + 6);
+      ctx.globalAlpha = 1;
+    }
+    ctx.textAlign = 'left';
+  }
+  function frame(t){
+    raf = requestAnimationFrame(frame);
+    if (!visible){ cancelAnimationFrame(raf); raf = 0; return; }
+    const dt = Math.min((t - last) / 1000, 0.033);
+    last = t;
+    phys(dt);
+    const HOT = hotColor();
+    ctx.fillStyle = '#030504';
+    ctx.fillRect(0, 0, W, H);
+    ctx.save();
+    ctx.translate(W / 2, H / 2); ctx.rotate(roll); ctx.translate(-W / 2, -H / 2);
+    ctx.strokeStyle = HOT;
+    ctx.globalAlpha = 0.14;
+    ctx.beginPath(); ctx.moveTo(-60, H / 2); ctx.lineTo(W + 60, H / 2); ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = 1.4;
+    const STEP = 6;
+    let prev = null;
+    for (let z = Math.floor(pz / STEP) * STEP + STEP; z < pz + 240; z += STEP){
+      if (inGap(z)){ prev = null; continue; }
+      const cx = centerX(z);
+      const pk = project(cx, PEAK, z);
+      const lf = project(cx - HALF, PEAK - HALF * SLOPE, z);
+      const rt = project(cx + HALF, PEAK - HALF * SLOPE, z);
+      if (pk && lf && rt){
+        const fade = clamp(1 - (z - pz) / 240, 0, 1);
+        ctx.globalAlpha = fade * 0.85;
+        ctx.beginPath();
+        ctx.moveTo(lf[0], lf[1]); ctx.lineTo(pk[0], pk[1]); ctx.lineTo(rt[0], rt[1]);
+        ctx.stroke();
+        if (prev){
+          ctx.globalAlpha = fade;
+          ctx.beginPath();
+          ctx.moveTo(prev.pk[0], prev.pk[1]); ctx.lineTo(pk[0], pk[1]);
+          ctx.moveTo(prev.lf[0], prev.lf[1]); ctx.lineTo(lf[0], lf[1]);
+          ctx.moveTo(prev.rt[0], prev.rt[1]); ctx.lineTo(rt[0], rt[1]);
+          ctx.stroke();
+        }
+        prev = {pk, lf, rt};
+      } else prev = null;
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+    drawKnife(t, HOT);
+    drawHUD(HOT);
+    if (!playing && dead <= 0){ cancelAnimationFrame(raf); raf = 0; }
+  }
+}
+
 /* ── 8 · clocks, uptime, ambient glitch ─────────────────────────── */
 function initClocks(){
   const clock = $('#clock'), up = $('#uptime'), t0 = Date.now();
@@ -1447,6 +1718,7 @@ function init(){
   initTitleSulk();
   initFakeButtons();
   initBall();
+  initSurf();
   consoleArt();
   const seen = (function(){ try{ return sessionStorage.getItem('sarri_booted'); }catch(e){ return 1; } })();
   if (REDUCED || seen){
