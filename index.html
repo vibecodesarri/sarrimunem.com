@@ -192,7 +192,7 @@ body.booting{overflow:hidden}
 #cur-ring.hot{width:48px;height:48px;border-color:var(--amber);opacity:1}
 @media (hover:hover) and (pointer:fine){
   .js.cursor-on body,.js.cursor-on a,.js.cursor-on button,.js.cursor-on input,
-  .js.cursor-on [data-magnetic]{cursor:none}
+  .js.cursor-on [data-magnetic],.js.cursor-on #ball{cursor:none}
   .js.cursor-on #cur-dot,.js.cursor-on #cur-ring{display:block}
 }
 
@@ -404,6 +404,19 @@ footer .secret-hint b{color:var(--amber);font-weight:400}
 @keyframes tvOff{from{clip-path:inset(0 0 0 0)}to{clip-path:inset(49.6% 0 49.6% 0)}}
 #shutdown.wake{animation:tvOn .3s ease-out both}
 @keyframes tvOn{from{clip-path:inset(49.6% 0 49.6% 0)}to{clip-path:inset(0 0 0 0)}}
+
+/* ── the ball. drag it. throw it. crucial infrastructure. ──────── */
+#ball{
+  position:fixed;left:0;top:0;width:46px;height:46px;border-radius:50%;
+  z-index:205;cursor:grab;touch-action:none;user-select:none;
+  -webkit-user-select:none;-webkit-tap-highlight-color:transparent;
+  background:radial-gradient(circle at 32% 30%,rgba(255,255,255,.92) 0%,var(--hot) 38%,rgba(0,0,0,.88) 100%);
+  box-shadow:var(--glow),inset -5px -7px 12px rgba(0,0,0,.5);
+  will-change:transform;
+}
+#ball::after{content:'';position:absolute;inset:7px;border-radius:50%;border:1px dashed rgba(5,8,7,.45)}
+#ball.held{cursor:grabbing;filter:brightness(1.28)}
+@media (prefers-reduced-motion:reduce){#ball{display:none}}
 
 /* ── reduced motion: calm everything down ───────────────────────── */
 @media (prefers-reduced-motion:reduce){
@@ -795,7 +808,7 @@ function initCursor(){
   let mx = innerWidth / 2, my = innerHeight / 2, rx = mx, ry = my, hot = false;
   window.addEventListener('mousemove', e => {
     mx = e.clientX; my = e.clientY;
-    const t = e.target.closest('a,button,input,[data-magnetic],#term-screen,h1.glitch');
+    const t = e.target.closest('a,button,input,[data-magnetic],#term-screen,h1.glitch,#ball');
     if (!!t !== hot){ hot = !!t; ring.classList.toggle('hot', hot); }
   }, {passive: true});
   document.addEventListener('mouseleave', () => { dot.style.opacity = ring.style.opacity = '0'; });
@@ -1298,6 +1311,105 @@ function initFakeButtons(){
   });
 }
 
+/* 7g — the ball. drag it, throw it, watch it bounce. do not ask why. */
+function initBall(){
+  if (REDUCED) return;
+  const el = document.createElement('div');
+  el.id = 'ball';
+  el.setAttribute('aria-hidden', 'true');
+  el.title = 'throw me';
+  document.body.appendChild(el);
+
+  const R = 23, GRAV = 2600, BOUNCE = 0.72, AIR = 0.9985, ROLL = 0.985;
+  let W = innerWidth, H = innerHeight;
+  let x = W - 76, y = H - R * 2 - 6, vx = 0, vy = 0, rot = 0;
+  let held = false, gx = 0, gy = 0, lvx = 0, lvy = 0, lt = 0;
+  let raf = 0, last = 0, bounces = 0, bragged = false, lastBlip = 0;
+
+  function draw(){
+    el.style.transform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) rotate(' + rot.toFixed(1) + 'deg)';
+  }
+  function blip(impact){
+    const now = performance.now();
+    if (now - lastBlip < 140) return;
+    lastBlip = now;
+    fanfare([120 + Math.min(impact / 14, 160)], 'sine', 0.028);
+  }
+  function step(t){
+    raf = requestAnimationFrame(step);
+    const dt = Math.min((t - last) / 1000, 0.033);
+    last = t;
+    if (held || dt <= 0) return;
+    vy += GRAV * dt;
+    vx *= AIR;
+    x += vx * dt;
+    y += vy * dt;
+    const floor = H - R * 2, right = W - R * 2;
+    if (y >= floor){
+      y = floor;
+      if (Math.abs(vy) > 90){ blip(Math.abs(vy)); bounces++; }
+      vy = -vy * BOUNCE;
+      vx *= ROLL;
+      if (Math.abs(vy) < 60) vy = 0;
+    }
+    if (y <= 0){ y = 0; vy = -vy * BOUNCE; }
+    if (x <= 0){ x = 0; vx = -vx * BOUNCE; blip(Math.abs(vx)); bounces++; }
+    if (x >= right){ x = right; vx = -vx * BOUNCE; blip(Math.abs(vx)); bounces++; }
+    rot += vx * dt * 2.6;
+    draw();
+    if (!bragged && bounces >= 14){
+      bragged = true;
+      toast('🏀 <b>ACHIEVEMENT UNLOCKED:</b> certified time waster. the ball respects you.');
+    }
+    if (vy === 0 && y === floor && Math.abs(vx) < 6){
+      vx = 0;
+      cancelAnimationFrame(raf); raf = 0;
+      draw();
+    }
+  }
+  function wake(){
+    if (!raf){ last = performance.now(); raf = requestAnimationFrame(step); }
+  }
+
+  el.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    try{ el.setPointerCapture(e.pointerId); }catch(err){ /* capture is a nicety, not a need */ }
+    held = true; el.classList.add('held');
+    gx = e.clientX - x; gy = e.clientY - y;
+    lvx = 0; lvy = 0; lt = performance.now();
+  });
+  window.addEventListener('pointermove', e => {
+    if (!held) return;
+    const now = performance.now(), dtp = Math.max(now - lt, 1);
+    const nx = clamp(e.clientX - gx, 0, W - R * 2);
+    const ny = clamp(e.clientY - gy, 0, H - R * 2);
+    lvx = 0.55 * ((nx - x) / dtp * 1000) + 0.45 * lvx;
+    lvy = 0.55 * ((ny - y) / dtp * 1000) + 0.45 * lvy;
+    x = nx; y = ny; lt = now;
+    draw();
+  });
+  function release(){
+    if (!held) return;
+    held = false; el.classList.remove('held');
+    vx = clamp(lvx, -3200, 3200);
+    vy = clamp(lvy, -3200, 3200);
+    wake();
+  }
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+
+  window.addEventListener('resize', () => {
+    W = innerWidth; H = innerHeight;
+    x = clamp(x, 0, W - R * 2); y = clamp(y, 0, H - R * 2);
+    draw(); wake();
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden){ cancelAnimationFrame(raf); raf = 0; }
+    else wake();
+  });
+  draw();
+}
+
 /* ── 8 · clocks, uptime, ambient glitch ─────────────────────────── */
 function initClocks(){
   const clock = $('#clock'), up = $('#uptime'), t0 = Date.now();
@@ -1334,6 +1446,7 @@ function init(){
   initWhisper();
   initTitleSulk();
   initFakeButtons();
+  initBall();
   consoleArt();
   const seen = (function(){ try{ return sessionStorage.getItem('sarri_booted'); }catch(e){ return 1; } })();
   if (REDUCED || seen){
